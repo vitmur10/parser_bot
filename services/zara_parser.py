@@ -18,7 +18,6 @@ def accept_cookies(driver):
             EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
         )
         btn.click()
-        logger.info("✔ Cookies accepted")
         time.sleep(1)
     except Exception:
         logger.info("⚠ Cookies banner not found")
@@ -58,7 +57,6 @@ def check_zara(driver, url: str) -> str:
     Формат розмірів спеціально зроблений під extract_available_sizes:
     кожен доступний розмір має рядок виду "🟢 32", недоступний – "🔴 34".
     """
-    logger.info("Checking ZARA URL: %s", url)
 
     try:
         driver.get(url)
@@ -89,7 +87,6 @@ def check_zara(driver, url: str) -> str:
             ))
         )
         product_name = name_el.text.strip()
-        logger.info("ZARA product name: %s", product_name)
     except Exception:
         logger.info("ZARA product name not found")
 
@@ -102,11 +99,9 @@ def check_zara(driver, url: str) -> str:
                 "//button[@data-qa-action='add-to-cart']"
             ))
         )
-        logger.info("🔘 'Додати у кошик' знайдено, клікаю...")
         add_btn.click()
         time.sleep(1)
     except Exception as e:
-        logger.info("❗ Кнопку 'Додати' НЕ знайдено: %s", e)
         header_lines = ["<b>🧵 Zara</b>"]
         if product_name:
             header_lines.append(product_name)
@@ -158,7 +153,6 @@ def check_zara(driver, url: str) -> str:
             lines.append(f"{mark} {label}")
 
     except Exception as e:
-        logger.info("❗ Розміри не знайдені: %s", e)
         lines.append("❗ Розміри не знайдені")
 
     return "\n".join(lines)

@@ -17,7 +17,6 @@ def parse_sizes(driver) -> List[Dict]:
       {"size": "M", "available": True/False}
     """
     sizes: List[Dict] = []
-    logger.info("🔍 Починаю парсити розміри Bershka...")
 
     # 1️⃣ Чекаємо кнопку "Додати у кошик"
     try:
@@ -29,7 +28,6 @@ def parse_sizes(driver) -> List[Dict]:
                 )
             )
         )
-        logger.info("✅ Кнопка 'Додати у кошик' зʼявилась — сторінка повністю завантажена.")
     except Exception as e:
         logger.warning("⚠ Кнопка 'Додати у кошик' НЕ зʼявилась, парсинг може бути неточним. %s", e)
 
@@ -44,7 +42,6 @@ def parse_sizes(driver) -> List[Dict]:
             )
         )
     except Exception as e:
-        logger.info("❗ Контейнер розмірів не знайдено: %s", e)
         return sizes
 
     # 3️⃣ Знаходимо розміри
@@ -53,12 +50,6 @@ def parse_sizes(driver) -> List[Dict]:
         "//div[contains(@class,'size-selector-desktop-pdp__sizes')]"
         "//button[contains(@class,'ui--dot-item')]"
     )
-
-    logger.info(f"🔍 Знайдено кнопок розмірів: {len(buttons)}")
-
-    if not buttons:
-        logger.info("❗ Розмірів не знайдено!")
-        return sizes
 
     # 4️⃣ Обробляємо кожен розмір
     for btn in buttons:
@@ -80,10 +71,6 @@ def parse_sizes(driver) -> List[Dict]:
                 or "розпродано" in aria_desc.lower()
         )
 
-        logger.info(
-            f"🔸 Розмір '{label}': classes={classes}, aria={aria_disabled}, "
-            f"aria-desc={aria_desc} → available={not unavailable}"
-        )
 
         sizes.append({
             "size": label,
