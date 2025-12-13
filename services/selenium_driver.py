@@ -1,12 +1,9 @@
 import time
 import logging
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from services.user_agents import get_random_ua
-
+from selenium import webdriver
 logger = logging.getLogger(__name__)
 
 
@@ -26,8 +23,8 @@ def create_driver(headless: bool = True) -> webdriver.Chrome:
     chrome_options.add_argument(f"--user-agent={ua}")
     chrome_options.add_argument("--lang=uk-UA,uk")
 
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
+    chrome_options.binary_location = "/usr/bin/chromium-browser"
+    driver = webdriver.Chrome(options=chrome_options)
     return driver
 
 
