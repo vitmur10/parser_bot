@@ -62,8 +62,8 @@ def create_driver(headless: bool = False) -> webdriver.Chrome:
 
     chrome_options.add_argument("--window-size=1920,1080")
 
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=chrome_options)
+    chrome_options.binary_location = "/usr/bin/chromium-browser"
+    driver = webdriver.Chrome(options=chrome_options)
 
     return driver
 
