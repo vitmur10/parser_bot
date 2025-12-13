@@ -1,18 +1,16 @@
 import logging
-from typing import Dict, List, Tuple
-from math import ceil
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from webdriver_manager.chrome import ChromeDriverManager
 import random
-from config import MAX_PER_BRAND, USER_AGENTS
-from utils.urls import detect_brand
-from services.zara_parser import check_zara
-from services.bershka_parser import check_bershka_one
-from selenium.common.exceptions import TimeoutException, WebDriverException
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from math import ceil
+from typing import Dict, List, Tuple
+from selenium import webdriver
+from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.webdriver.chrome.options import Options
+from config import MAX_PER_BRAND, USER_AGENTS
+from services.bershka_parser import check_bershka_one
+from services.zara_parser import check_zara
+from utils.urls import detect_brand
 
 logger = logging.getLogger(__name__)
 
