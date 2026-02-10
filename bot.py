@@ -1,7 +1,10 @@
 import asyncio
 import logging
-from aiogram import Bot, Dispatcher
 from html import escape
+from functools import partial
+
+from aiogram import Bot, Dispatcher
+
 from config import BOT_TOKEN, setup_logging
 from handlers import all_routers
 from db import (
@@ -13,49 +16,39 @@ from services.selenium_parser import check_urls_for_user_parallel
 from utils.urls import extract_available_sizes, detect_brand
 
 # інтервал між циклами моніторингу, сек
-# можеш сміливо поставити 300 (5 хв) або 60 (1 хв), але стеж за навантаженням
-MONITOR_INTERVAL = 60  # 10 хвилин
+MONITOR_INTERVAL = 30  # 1 хв (комент був не той)
 
 
 def build_notify_text(
-        url: str,
-        brand: str | None,
-        status_text: str,
-        available_sizes: set[str],
-        wanted_sizes: set[str],
+    url: str,
+    brand: str | None,
+    status_text: str,
+    available_sizes: set[str],
+    wanted_sizes: set[str],
 ) -> str:
     """
     Формує фінальне повідомлення:
     - в заголовку: Магазин + назва товару
     - у списку розмірів: або тільки потрібні, або всі (якщо користувач не вказав).
     """
-    # --- дістаємо назву товару з status_text ---
-    # у наших парсерів:
-    #   1-й рядок: <b>🧵 Zara</b> / <b>🧥 Bershka</b>
-    #   2-й рядок: назва товару
     lines = status_text.splitlines()
     product_name = ""
     if len(lines) >= 2:
         product_name = lines[1].strip()
 
-    # --- бренд ---
     brand_label = (brand or "").strip()
     if not brand_label:
         brand_label = detect_brand(url) or ""
     brand_label = brand_label.capitalize() if brand_label else "Товар"
 
-    # заголовок: "Bershka — Джинси-суперскіни..."
     if product_name:
         title = f"{brand_label} — {escape(product_name)}"
     else:
         title = brand_label
 
-    # --- які розміри показувати ---
     if wanted_sizes:
-        # показуємо тільки ті, що йому цікаві
         show_sizes = sorted(available_sizes & wanted_sizes)
     else:
-        # якщо не вказував розміри — показуємо всі доступні
         show_sizes = sorted(available_sizes)
 
     sizes_list = ", ".join(show_sizes) if show_sizes else "—"
@@ -72,22 +65,26 @@ def build_notify_text(
 async def monitor_loop(bot: Bot):
     """
     Фоновий моніторинг:
-    - раз у MONITOR_INTERVAL секунд дістає всі активні підписки
-    - групує їх по chat_id
-    - для кожного чату паралельно перевіряє всі URL через Selenium
-    - надсилає ОКРЕМЕ повідомлення по кожному товару,
-      тільки якщо змінився набір доступних розмірів
-      і є перетин з відстежуваними розмірами.
+    - бере всі активні підписки
+    - групує по chat_id
+    - для кожного чату запускає Selenium перевірку
+    - отримує результати по мірі готовності (через callback on_result)
+    - одразу відправляє повідомлення з worker'а (не чекає завершення всіх url)
     """
     logger = logging.getLogger("monitor")
+    send_sem = asyncio.Semaphore(5)  # 3-8 норм для одного чату
 
+    async def safe_send(text: str):
+        async with send_sem:
+            try:
+                await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
+            except Exception as e:
+                logger.warning("send failed chat=%s err=%s", chat_id, e)
     while True:
         try:
             rows = get_active_subscriptions()
 
-            # chat_id -> список (sub_id, url, brand, sizes_raw)
             users_map: dict[int, list[tuple[int, str, str | None, str | None]]] = {}
-            # sub_id -> last_status (текст)
             last_status_map: dict[int, str] = {}
 
             for r in rows:
@@ -96,13 +93,10 @@ async def monitor_loop(bot: Bot):
                 url = r["url"]
                 brand = r["brand"]
                 last_status = r["last_status"] or ""
-                # може бути sqlite.Row або dict
                 sizes_raw = r.get("sizes") if isinstance(r, dict) else r["sizes"]
 
                 last_status_map[sub_id] = last_status
-                users_map.setdefault(chat_id, []).append(
-                    (sub_id, url, brand, sizes_raw)
-                )
+                users_map.setdefault(chat_id, []).append((sub_id, url, brand, sizes_raw))
 
             loop = asyncio.get_running_loop()
 
@@ -113,77 +107,120 @@ async def monitor_loop(bot: Bot):
 
                 logger.info("Monitoring %s urls for chat %s", len(urls), chat_id)
 
-                # всередині check_urls_for_user_parallel вже паралельні драйвери
-                status_map = await loop.run_in_executor(
+                url_to_item: dict[str, tuple[int, str | None, str | None]] = {
+                    url: (sub_id, brand, sizes_raw)
+                    for (sub_id, url, brand, sizes_raw) in items
+                }
+
+                queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
+                done = asyncio.Event()
+
+                async def sender_worker():
+                    logger.info("sender_worker START chat=%s", chat_id)
+
+                    # kill-test: доводимо, що worker і queue живі
+                    await queue.put(("__TEST__", "OK"))
+
+                    while True:
+                        if done.is_set() and queue.empty():
+                            logger.info("sender_worker FINISH chat=%s", chat_id)
+                            break
+
+                        url, new_status = await queue.get()
+
+                        if url == "__TEST__":
+                            logger.info("sender_worker TEST OK (queue works) chat=%s", chat_id)
+                            continue
+
+                        logger.info(
+                            "sender_worker GOT chat=%s url=%s status_len=%s",
+                            chat_id, url, len(new_status or "")
+                        )
+
+                        meta = url_to_item.get(url)
+                        if not meta:
+                            logger.warning("sender_worker: url not found in url_to_item: %s", url)
+                            continue
+
+                        sub_id, brand, sizes_raw = meta
+                        old_status = last_status_map.get(sub_id, "")
+
+                        if not new_status:
+                            continue
+
+                        new_available = extract_available_sizes(new_status)
+                        old_available = extract_available_sizes(old_status)
+
+                        logger.info(
+                            "DBG chat=%s sub=%s url=%s old=%s new=%s sizes_raw=%s",
+                            chat_id, sub_id, url,
+                            sorted(old_available), sorted(new_available),
+                            sizes_raw
+                        )
+
+                        # Якщо набір доступних розмірів не змінився – нічого не шлемо
+                        if new_available == old_available:
+                            continue
+
+                        # Оновлюємо статус в БД
+                        update_subscription_status(sub_id, new_status)
+                        last_status_map[sub_id] = new_status
+
+                        if not new_available:
+                            continue
+
+                        if sizes_raw:
+                            wanted_sizes = {
+                                s.strip().upper()
+                                for s in sizes_raw.split(",")
+                                if s.strip()
+                            }
+                        else:
+                            wanted_sizes: set[str] = set()
+
+                        if not wanted_sizes:
+                            trigger = True
+                        else:
+                            trigger = bool(new_available & wanted_sizes)
+
+                        if not trigger:
+                            continue
+
+                        text = build_notify_text(
+                            url=url,
+                            brand=brand,
+                            status_text=new_status,
+                            available_sizes=new_available,
+                            wanted_sizes=wanted_sizes,
+                        )
+
+                        try:
+                            logger.info("SEND chat=%s sub=%s url=%s", chat_id, sub_id, url)
+                            asyncio.create_task(safe_send(text))
+                        except Exception as e:
+                            logger.exception("Cannot send message chat=%s sub=%s url=%s err=%s", chat_id, sub_id, url, e)
+
+                sender_task = asyncio.create_task(sender_worker())
+
+                def on_result(url: str, status: str):
+                    # callback викликається з потоку Selenium
+                    logger.info(
+                        "CB on_result CALLED chat=%s url=%s status_len=%s",
+                        chat_id, url, len(status or "")
+                    )
+                    loop.call_soon_threadsafe(queue.put_nowait, (url, status))
+
+                # ✅ ГОЛОВНЕ: запускаємо selenium і передаємо callback on_result
+                await loop.run_in_executor(
                     None,
                     check_urls_for_user_parallel,
                     urls,
+                    5,          # max_workers
+                    on_result   # callback
                 )
 
-                for sub_id, url, brand, sizes_raw in items:
-                    new_status = status_map.get(url)
-                    old_status = last_status_map.get(sub_id, "")
-
-                    if not new_status:
-                        continue
-
-                    # --- Порівнюємо не текст, а множини доступних розмірів ---
-                    new_available = extract_available_sizes(new_status)
-                    old_available = extract_available_sizes(old_status)
-
-                    # Якщо набір доступних розмірів не змінився – нічого не шлемо
-                    if new_available == old_available:
-                        continue
-
-                    # Оновлюємо статус в БД для історії
-                    update_subscription_status(sub_id, new_status)
-
-                    # Якщо тепер немає жодного доступного розміру – теж мовчимо
-                    if not new_available:
-                        continue
-
-                    # --- Розміри, за якими юзер хоче слідкувати ---
-                    if sizes_raw:
-                        wanted_sizes = {
-                            s.strip().upper()
-                            for s in sizes_raw.split(",")
-                            if s.strip()
-                        }
-                    else:
-                        wanted_sizes: set[str] = set()  # означає "всі розміри"
-
-                    # --- Чи треба надсилати повідомлення? ---
-                    if not wanted_sizes:
-                        # користувач не задав конкретні розміри:
-                        # якщо є хоч один доступний – шлемо
-                        trigger = True
-                    else:
-                        # є перетин потрібних з доступними?
-                        trigger = bool(new_available & wanted_sizes)
-
-                    if not trigger:
-                        continue
-
-                    # --- Будуємо фінальний текст для користувача ---
-                    text = build_notify_text(
-                        url=url,
-                        brand=brand,
-                        status_text=new_status,
-                        available_sizes=new_available,
-                        wanted_sizes=wanted_sizes,
-                    )
-
-                    try:
-                        await bot.send_message(
-                            chat_id=chat_id,
-                            text=text,
-                            parse_mode="HTML",
-                            # превʼю не вимикаємо – картку додає Telegram
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Cannot send message to chat %s: %s", chat_id, e
-                        )
+                done.set()
+                await sender_task
 
         except Exception as e:
             logger.exception("Error in monitor_loop: %s", e)
@@ -198,14 +235,10 @@ async def main():
     bot = Bot(token=BOT_TOKEN)
     dp = Dispatcher()
 
-    # підключаємо всі роутери (start/help, links, subscriptions, chatid)
     for r in all_routers:
         dp.include_router(r)
 
-    # запускаємо фоновий монітор
     asyncio.create_task(monitor_loop(bot))
-
-    # запускаємо самого бота
     await dp.start_polling(bot)
 
 

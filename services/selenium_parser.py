@@ -3,7 +3,7 @@ import random
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from math import ceil
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Callable, Optional
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
@@ -60,13 +60,13 @@ def create_driver(headless: bool = False) -> webdriver.Chrome:
 
     chrome_options.add_argument("--window-size=1920,1080")
 
-    chrome_options.binary_location = "/usr/bin/chromium-browser"
+    #chrome_options.binary_location = "/usr/bin/chromium-browser"
     driver = webdriver.Chrome(options=chrome_options)
 
     return driver
 
 
-def _worker_chunk(urls_chunk: List[str]) -> List[Tuple[str, str]]:
+def _worker_chunk(urls_chunk: List[str], on_result=None) -> List[Tuple[str, str]]:
     """
     Один worker: створює свій driver, проходить по виданих urls, повертає [(url, status), ...]
     """
@@ -87,7 +87,8 @@ def _worker_chunk(urls_chunk: List[str]) -> List[Tuple[str, str]]:
             else:
                 status = "❗ Непідтримуваний домен (не Zara/Bershka)"
 
-            results.append((url, status))
+            if on_result:
+                on_result(url, status)
 
     except Exception as e:
         logger.exception("Error in worker chunk: %s", e)
@@ -105,10 +106,13 @@ def _worker_chunk(urls_chunk: List[str]) -> List[Tuple[str, str]]:
 def check_many_products_selenium_parallel(
         urls: List[str],
         max_workers: int = 4,
+        on_result=None,
 ) -> Dict[str, List[Tuple[str, str]]]:
     """
     Паралельна перевірка через кілька driver'ів.
     max_workers = скільки максимум одночасних браузерів відкривати.
+
+    Якщо переданий on_result(url, status) — буде викликатись одразу після парсингу кожного url.
 
     Повертає:
     {
@@ -141,7 +145,6 @@ def check_many_products_selenium_parallel(
         return {"zara": [], "bershka": [], "other": []}
 
     # Розрахуємо кількість воркерів адекватно до кількості URL
-    # щоб не запускати 4 драйвери для 3 посилань.
     workers = min(max_workers, max(1, len(to_check)))
 
     # Розбиваємо на чанки
@@ -163,12 +166,18 @@ def check_many_products_selenium_parallel(
 
     # Спочатку додамо "other" як не підтримувані (без Selenium)
     for u in other_urls:
-        results["other"].append((u, "❗ Непідтримуваний домен (не Zara/Bershka)"))
+        status = "❗ Непідтримуваний домен (не Zara/Bershka)"
+        results["other"].append((u, status))
+        if on_result:
+            try:
+                on_result(u, status)
+            except Exception:
+                logger.exception("on_result callback failed for url=%s", u)
 
     # Запускаємо потоки з окремими драйверами
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_chunk = {
-            executor.submit(_worker_chunk, chunk): chunk for chunk in chunks
+            executor.submit(_worker_chunk, chunk, on_result): chunk for chunk in chunks
         }
 
         for future in as_completed(future_to_chunk):
@@ -176,7 +185,7 @@ def check_many_products_selenium_parallel(
             for url, status in chunk_result:
                 brand = detect_brand(url)
                 if brand == "zara":
-                     results["zara"].append((url, status))
+                    results["zara"].append((url, status))
                 elif brand == "bershka":
                     results["bershka"].append((url, status))
                 else:
@@ -259,24 +268,27 @@ def check_urls_for_user(urls: List[str]) -> Dict[str, str]:
     return status_map
 
 
+
 def check_urls_for_user_parallel(
     urls: List[str],
     max_workers: int = 4,
+    on_result: Optional[Callable[[str, str], None]] = None,
 ) -> Dict[str, str]:
     """
     Паралельна версія для моніторингу:
     - всередині використовує check_many_products_selenium_parallel(...)
-    - повертає {url: status_text}, як і старий check_urls_for_user
+    - повертає {url: status_text}
+    - якщо переданий on_result(url, status) — викликається одразу по мірі готовності кожного url
     """
     grouped = check_many_products_selenium_parallel(
         urls=urls,
         max_workers=max_workers,
+        on_result=on_result,   # ✅ прокидаємо callback далі
     )
 
     status_map: Dict[str, str] = {}
 
-    for brand_key, items in grouped.items():
-        # items: List[Tuple[str, str]]  -> (url, status_text)
+    for _, items in grouped.items():
         for url, status in items:
             status_map[url] = status
 
