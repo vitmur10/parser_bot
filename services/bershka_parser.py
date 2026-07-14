@@ -19,11 +19,13 @@ def accept_cookies_bershka(driver):
     """
     selectors = [
         (By.ID, "onetrust-accept-btn-handler"),
+        (By.CSS_SELECTOR, "button.onetrust-close-btn-handler"),
+        (By.CSS_SELECTOR, "#onetrust-close-btn-container button"),
         (By.XPATH, "//button[contains(@id,'accept') or contains(@class,'accept')]"),
     ]
     for by, sel in selectors:
         try:
-            btn = WebDriverWait(driver, 5).until(
+            btn = WebDriverWait(driver, 2).until(
                 EC.element_to_be_clickable((by, sel))
             )
             btn.click()
@@ -135,10 +137,23 @@ def check_bershka_one(driver, url: str) -> str:
     try:
         driver.get(url)
     except WebDriverException as e:
-        logger.warning("❗ Помилка відкриття сторінки %s: %s", url, e)
+        # ВАЖЛИВО: якщо сесія ChromeDriver вже мертва (браузер впав),
+        # тут прилетить "Connection refused" / "invalid session id".
+        # Логуємо це явно, щоб відрізнити від "сайт не завантажився".
+        logger.error(
+            "❗ WebDriverException при driver.get(%s): %s (тип=%s)",
+            url, e, type(e).__name__
+        )
         return (
             f"🔗 <a href=\"{url}\">Посилання на товар</a>\n"
-            f"⚠️ Помилка відкриття сторінки"
+            f"⚠️ Помилка відкриття сторінки (driver/session error): {e}"
+        )
+    except Exception as e:
+        # ловимо взагалі все, щоб один "мертвий" driver не зупинив весь чанк мовчки
+        logger.exception("❗ НЕОЧІКУВАНА помилка при driver.get(%s): %s", url, e)
+        return (
+            f"🔗 <a href=\"{url}\">Посилання на товар</a>\n"
+            f"⚠️ Непередбачена помилка: {e}"
         )
 
     # даємо сторінці прогрузитися (React рендерить асинхронно —
