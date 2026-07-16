@@ -9,6 +9,14 @@ BOT_TOKEN = os.getenv("TOKEN")
 MAX_PER_BRAND = 50
 REQUEST_TIMEOUT = 15
 
+# Режим браузера.
+# HEADLESS=0 (або false/no) у .env → вікно Chrome ВИДИМЕ (зручно дивитися переходи/редиректи).
+# За замовчуванням True (headless) — для продакшену/сервера.
+HEADLESS = os.getenv("HEADLESS", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# Скільки паралельних браузерів. У видимому режимі краще 1, щоб не плодити вікна.
+MAX_WORKERS = int(os.getenv("MAX_WORKERS", "1" if not HEADLESS else "4"))
+
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.6167.85 Safari/537.36",
@@ -47,6 +55,6 @@ DEFAULT_HEADERS = {
 
 def setup_logging():
     logging.basicConfig(
-        level=logging.DEBUG,
+        level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )

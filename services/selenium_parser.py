@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple, Callable, Optional
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
-from config import MAX_PER_BRAND, USER_AGENTS
+from config import MAX_PER_BRAND, USER_AGENTS, HEADLESS
 from services.bershka_parser import check_bershka_one
 from services.zara_parser import check_zara
 from utils.urls import detect_brand
@@ -76,7 +76,9 @@ def _worker_chunk(urls_chunk: List[str], on_result=None) -> List[Tuple[str, str]
     driver = None
     results: List[Tuple[str, str]] = []
     try:
-        driver = create_driver(headless=True)
+        # HEADLESS з config/.env: HEADLESS=0 → видиме вікно Chrome для дебагу переходів.
+        driver = create_driver(headless=HEADLESS)
+        logger.info("🖥 Driver створено (headless=%s)", HEADLESS)
 
         for url in urls_chunk:
             brand = detect_brand(url)
